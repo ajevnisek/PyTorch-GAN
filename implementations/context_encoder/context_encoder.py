@@ -29,6 +29,7 @@ import torch.nn.functional as F
 import torch
 
 os.makedirs("images", exist_ok=True)
+os.makedirs("saved_models", exist_ok=True)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--n_epochs", type=int, default=200, help="number of epochs of training")
@@ -43,6 +44,14 @@ parser.add_argument("--img_size", type=int, default=128, help="size of each imag
 parser.add_argument("--mask_size", type=int, default=64, help="size of random mask")
 parser.add_argument("--channels", type=int, default=3, help="number of image channels")
 parser.add_argument("--sample_interval", type=int, default=500, help="interval between image sampling")
+parser.add_argument("--save_model_interval", type=int, default=10000,
+                    help="interval between model saves")
+parser.add_argument('--dont_load_latest_gan', dest='load_latest_gan',
+                    action='store_false',
+                    help="train gan from scrath; if not flagged, load the "
+                         "latest gan in saved_models folder")
+parser.set_defaults(load_latest_gan=True)
+
 opt = parser.parse_args()
 print(opt)
 
@@ -66,9 +75,36 @@ def weights_init_normal(m):
 adversarial_loss = torch.nn.MSELoss()
 pixelwise_loss = torch.nn.L1Loss()
 
+
+def load_latest_gan():
+    all_saved_models = os.listdir("saved_models")
+    all_saved_models.sort(key=lambda x: int(x))
+    newest_gan_index = all_saved_models[-1]
+
+    print(f"loading GAN from batch number: {newest_gan_index}")
+
+    generator_path = os.path.join("saved_models",
+                                  f"{newest_gan_index}",
+                                  f"g_{newest_gan_index}")
+    discriminator_path = os.path.join("saved_models",
+                                  f"{newest_gan_index}",
+                                  f"d_{newest_gan_index}")
+
+    loaded_generator = Generator(channels=opt.channels)
+    loaded_generator.load_state_dict(torch.load(generator_path))
+
+    loaded_discriminator = Discriminator(channels=opt.channels)
+    loaded_discriminator.load_state_dict(torch.load(discriminator_path))
+    return loaded_generator, loaded_discriminator
+
+
 # Initialize generator and discriminator
-generator = Generator(channels=opt.channels)
-discriminator = Discriminator(channels=opt.channels)
+if opt.load_latest_gan:
+    generator, discriminator = load_latest_gan()
+else:
+    generator = Generator(channels=opt.channels)
+    discriminator = Discriminator(channels=opt.channels)
+
 
 if cuda:
     generator.cuda()
@@ -120,6 +156,18 @@ def save_sample(batches_done):
     save_image(sample, "images/%d.png" % batches_done, nrow=6, normalize=True)
 
 
+def save_gan(g, d, batches):
+    os.makedirs(f"saved_models/{batches}/", exist_ok=True)
+    generator_path = os.path.join("saved_models",
+                                  f"{batches}",
+                                  f"g_{batches}")
+    discriminator_path = os.path.join("saved_models",
+                                      f"{batches}",
+                                      f"d_{batches}")
+    torch.save(g.state_dict(), generator_path)
+    torch.save(d.state_dict(), discriminator_path)
+
+
 # ----------
 #  Training
 # ----------
@@ -145,7 +193,7 @@ for epoch in range(opt.n_epochs):
         # Generate a batch of images
         gen_parts = generator(masked_imgs)
 
-        # Adversarial and pixelwise loss
+        # Adversarial and pixel-wise loss
         g_adv = adversarial_loss(discriminator(gen_parts), valid)
         g_pixel = pixelwise_loss(gen_parts, masked_parts)
         # Total loss
@@ -177,3 +225,8 @@ for epoch in range(opt.n_epochs):
         batches_done = epoch * len(dataloader) + i
         if batches_done % opt.sample_interval == 0:
             save_sample(batches_done)
+        if batches_done % opt.save_model_interval == 0:
+            save_gan(generator, discriminator, batches_done)
+
+
+save_gan(generator, discriminator, batches_done)
